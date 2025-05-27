@@ -3,6 +3,8 @@ import base64
 import os
 import urllib
 import httpx
+from oauthlib.oauth2 import BackendApplicationClient
+from requests_oauthlib import OAuth2Session
 
 from uuid import uuid4
 
@@ -29,7 +31,6 @@ from a2a.types import (
 )
 from common.utils.push_notification_auth import PushNotificationReceiverAuth
 
-
 @click.command()
 @click.option('--agent', default='http://localhost:10000')
 @click.option('--session', default='0')
@@ -45,6 +46,8 @@ async def cli(
     push_notification_receiver: str,
     token,
 ):
+    if None == token:
+        token = get_oauth_token(agent)
     async with httpx.AsyncClient(timeout=30) as httpx_client:
         card_resolver = A2ACardResolver(httpx_client, agent)
         card = await card_resolver.get_agent_card()
@@ -103,6 +106,50 @@ async def cli(
                     )
                 )
 
+def get_oauth_token(agent: str) -> str | None:
+    print ("Trying to obtain token via client credenitals grant")
+    try:
+        client_id = os.getenv("OAUTH_CLIENT_ID")
+        client_secret = os.getenv("OAUTH_CLIENT_SECRET")
+
+        if not client_id or not client_secret:
+            print("Missing OAUTH_CLIENT_ID or OAUTH_CLIENT_SECRET in environment, skipping OAuth flow.")
+            return None
+
+        base_url = agent.rstrip('/')
+        discovery_url = f'{base_url}/.well-known/oauth-authorization-server'
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(discovery_url)
+                response.raise_for_status()
+                metadata = response.json()
+        except Exception as e:
+            print(f"Failed to fetch metadata from {discovery_url}: {e}")
+            return None
+
+        token_url = metadata.get('token_endpoint')
+        if not token_url:
+            print("Missing 'token_endpoint' in server metadata.")
+            return None
+
+        client = BackendApplicationClient(client_id=client_id)
+        oauth = OAuth2Session(client=client)
+
+        try:
+            token_response = oauth.fetch_token(
+                token_url=token_url,
+                client_id=client_id,
+                client_secret=client_secret
+            )
+            print ("Obtained OAuth token")
+            return token_response.get('access_token')
+        except Exception as e:
+            print(f"Failed to fetch token: {e}")
+            return None
+
+    except Exception as e:
+        print(f"Unexpected error in get_oauth_token_sync: {e}")
+        return None
 
 async def completeTask(
     client: A2AClient,
@@ -265,7 +312,6 @@ async def completeTask(
         return True, contextId, taskId
     ## Failure case, shouldn't reach
     return True, contextId, taskId
-
 
 if __name__ == '__main__':
     asyncio.run(cli())
